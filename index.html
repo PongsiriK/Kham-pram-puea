@@ -1,65 +1,196 @@
 <!DOCTYPE html>
 <html lang="th">
 <head>
-  <meta charset="UTF-8">
-  <title>เข้าห้องและดูคนในห้อง</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>คำพร่ำเพื่อ</title>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+  <style>
+    body { font-family: sans-serif; background: #f8f8f8; margin: 20px; text-align: center; }
+    button { margin: 5px; padding: 8px 14px; font-size: 14px; cursor: pointer; }
+    #cards { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 20px; }
+
+    .card {
+      border: 2px solid #ccc; padding: 12px; width: 120px;
+      background: white; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      display: flex; flex-direction: column; align-items: center;
+    }
+
+    .game-name { color: blue; font-weight: bold; margin-bottom: 8px; }
+    .word-text { font-size: 20px; color: red; font-weight: bold; }
+
+    .expanded-card {
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: white; border: 3px solid #333; padding: 30px;
+      z-index: 1000; box-shadow: 0 5px 15px rgba(0,0,0,0.4); border-radius: 12px;
+      width: 90vw; max-width: 500px; text-align: center;
+    }
+
+    .expanded-card .game-name { font-size: 24px; }
+    .expanded-card .word-text { font-size: 36px; }
+
+    .overlay {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.5); z-index: 999;
+    }
+
+    @media (max-width: 600px) {
+      .card { width: 100px; }
+      .expanded-card { max-width: 90%; padding: 20px; }
+    }
+  </style>
 </head>
 <body>
-  <h2>เข้าห้อง</h2>
-  <input id="nameInput" placeholder="ชื่อของคุณ" />
-  <input id="roomInput" placeholder="รหัสห้อง" />
-  <button onclick="joinRoom()">เข้าห้อง</button>
+  <h1>คำพร่ำเพื่อ</h1>
+  <p id="wordCountInfo">กำลังโหลด...</p>
+  <button onclick="drawCard()">สุ่มการ์ด</button>
+  <button onclick="discardAll()">ทิ้งการ์ดทั้งหมด</button>
+  <button onclick="resetRoom()">รีเซตห้อง</button>
 
-  <h3>คนในห้อง:</h3>
-  <ul id="userList"></ul>
+  <div id="cards"></div>
 
-  <!-- Firebase -->
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+  <div id="overlay" class="overlay" style="display:none;" onclick="closeExpanded()"></div>
+  <div id="expandedCard" class="expanded-card" style="display:none;">
+    <!-- <div class="game-name">คำพร่ำเพื่อ</div> -->
+    <div id="expandedWord" class="word-text"></div>
+  </div>
 
   <script>
+    // Firebase config ของคุณ
     const firebaseConfig = {
-  apiKey: "AIzaSyDWVntpmELhdLufyHB4VFQA9pHE_pfxeV4",
-  authDomain: "kham-pram-puea.firebaseapp.com",
-  databaseURL: "https://kham-pram-puea-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "kham-pram-puea",
-  storageBucket: "kham-pram-puea.firebasestorage.app",
-  messagingSenderId: "971556304520",
-  appId: "1:971556304520:web:58969028eb240c5cd5513d",
-  measurementId: "G-N5QBBJX55R"
-};
-
+      apiKey: "AIzaSyDWVntpmELhdLufyHB4VFQA9pHE_pfxeV4",
+      authDomain: "kham-pram-puea.firebaseapp.com",
+      databaseURL: "https://kham-pram-puea-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "kham-pram-puea",
+      storageBucket: "kham-pram-puea.appspot.com",
+      messagingSenderId: "971556304520",
+      appId: "1:971556304520:web:58969028eb240c5cd5513d",
+      measurementId: "G-N5QBBJX55R"
+    };
     firebase.initializeApp(firebaseConfig);
     const db = firebase.database();
+    const roomRef = db.ref("online-room");
 
-    let roomId, userId;
+    let allWords = [];
+    let hand = [];
+    let usedIndexes = new Set();
 
-    function joinRoom() {
-      const name = document.getElementById('nameInput').value;
-      roomId = document.getElementById('roomInput').value;
-      if (!name || !roomId) return alert('ใส่ชื่อและรหัสห้องก่อน');
+    // โหลดคำจาก Firebase
+    firebase.database().ref("words").once("value").then(snapshot => {
+      const data = snapshot.val();
+      if (Array.isArray(data)) {
+        allWords = data;
+        updateWordCount();
+      } else {
+        alert("ไม่พบคำในฐานข้อมูล");
+      }
+    });
 
-      userId = 'user_' + Math.random().toString(36).slice(2, 9);
-      const userRef = db.ref(`rooms/${roomId}/users/${userId}`);
-      userRef.set({ name });
+    // โหลดข้อมูลที่ใช้ไปแล้ว
+    roomRef.child("used").on("value", snapshot => {
+      const used = snapshot.val() || [];
+      usedIndexes = new Set(used);
+      updateWordCount();
+    });
 
-      // ลบเมื่อปิดเว็บ
-      window.addEventListener('beforeunload', () => userRef.remove());
+    function updateWordCount() {
+      document.getElementById("wordCountInfo").innerText =
+        `คำทั้งหมด: ${allWords.length} | คำที่เหลือ: ${allWords.length - usedIndexes.size}`;
+    }
 
-      // แสดงรายชื่อผู้เล่นแบบ real-time
-      db.ref(`rooms/${roomId}/users`).on('value', snapshot => {
-        const list = document.getElementById('userList');
-        list.innerHTML = '';
-        const users = snapshot.val();
-        for (const uid in users) {
-          const li = document.createElement('li');
-          li.textContent = users[uid].name;
-          list.appendChild(li);
-        }
+    function drawCard() {
+      if (usedIndexes.size >= allWords.length) {
+        alert("คุณสุ่มคำครบหมดแล้ว!");
+        return;
+      }
+      let index;
+      do {
+        index = Math.floor(Math.random() * allWords.length);
+      } while (usedIndexes.has(index));
+      roomRef.child("used").set([...usedIndexes, index]);
+      hand.push({ index, opened: false });
+      renderCards();
+    }
+
+    function discardCard(idx) {
+      hand.splice(idx, 1);
+      renderCards();
+    }
+
+    function toggleCard(idx) {
+      hand[idx].opened = !hand[idx].opened;
+      renderCards();
+    }
+
+    function expandCard(idx) {
+      const card = hand[idx];
+      const word = allWords[card.index];
+      hand = hand.map((c, i) => i === idx ? { ...c } : { ...c, opened: false });
+      renderCards();
+      document.getElementById("expandedWord").innerText = word;
+      document.getElementById("overlay").style.display = "block";
+      document.getElementById("expandedCard").style.display = "block";
+    }
+
+    function closeExpanded() {
+      document.getElementById("overlay").style.display = "none";
+      document.getElementById("expandedCard").style.display = "none";
+    }
+
+    function discardAll() {
+      if (confirm("แน่ใจหรือไม่ว่าจะทิ้งการ์ดทั้งหมด?")) {
+        hand = [];
+        renderCards();
+      }
+    }
+
+    function resetRoom() {
+      const confirmText = prompt("พิมพ์คำว่า 'Reset' เพื่อยืนยัน");
+      if (confirmText === "Reset") {
+        roomRef.remove();
+        alert("ห้องถูกรีเซตแล้ว");
+        hand = [];
+        renderCards();
+      }
+    }
+
+    function renderCards() {
+      const container = document.getElementById("cards");
+      container.innerHTML = "";
+      hand.forEach((card, idx) => {
+        const div = document.createElement("div");
+        div.className = "card";
+
+        const title = document.createElement("div");
+        title.className = "game-name";
+        <!-- title.textContent = "คำพร่ำเพื่อ"; -->
+
+        const word = document.createElement("div");
+        word.className = "word-text";
+        word.textContent = card.opened ? allWords[card.index] : "???";
+
+        const btnToggle = document.createElement("button");
+        btnToggle.textContent = card.opened ? "ปิดคำ" : "เปิดคำ";
+        btnToggle.onclick = () => toggleCard(idx);
+
+        const btnDiscard = document.createElement("button");
+        btnDiscard.textContent = "ทิ้งคำ";
+        btnDiscard.onclick = () => discardCard(idx);
+
+        const btnExpand = document.createElement("button");
+        btnExpand.textContent = "ขยาย";
+        btnExpand.onclick = () => expandCard(idx);
+
+        div.appendChild(title);
+        div.appendChild(word);
+        div.appendChild(btnToggle);
+        div.appendChild(btnDiscard);
+        div.appendChild(btnExpand);
+
+        container.appendChild(div);
       });
     }
   </script>
 </body>
 </html>
-
-
